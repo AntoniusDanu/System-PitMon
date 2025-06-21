@@ -12,12 +12,12 @@
 #include <lwip/sockets.h>
 #include <lwip/netdb.h>
 
-#define WIFI_SSID       "BRT ELECTRIC GUEST"
-#define WIFI_PASS       "Transformasi2027"
+#define WIFI_SSID       "########"
+#define WIFI_PASS       "###########"
 #define TAG "ESP32-CAM"
 #define LED_GPIO        GPIO_NUM_4
 #define PIT_ID          0  // Ganti sesuai ID PIT (0=P1, 1=P2, dst)
-#define BACKEND_URL     "http://10.10.12.113:8000/upload?pit=0"
+#define BACKEND_URL     "http://<IP Add>:<port>/upload?pit=0"
 
 #define PWDN_GPIO_NUM   32
 #define RESET_GPIO_NUM  -1
