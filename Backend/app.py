@@ -19,11 +19,11 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 for folder in FOLDERS:
     os.makedirs(os.path.join(DOWNLOAD_DIR, folder), exist_ok=True)
 
-DO_SPACES_REGION = "sgp1"
-DO_SPACES_ENDPOINT = "https://sgp1.digitaloceanspaces.com"
-DO_SPACES_KEY = "DO801UTAA8KY7NAHHRC8"
-DO_SPACES_SECRET = "Hos62RJQmYVkARvJmk96xPXMG04p58SK5q/WTlzpycE"
-DO_SPACES_BUCKET = "pitmonitoring"
+DO_SPACES_REGION = "####"
+DO_SPACES_ENDPOINT = "#####"
+DO_SPACES_KEY = "#######"
+DO_SPACES_SECRET = "######"
+DO_SPACES_BUCKET = "#########"
 
 s3 = boto3.client(
     's3',
