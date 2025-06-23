@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Form  # Tambahkan jika belum ada
 from ultralytics import YOLO
 from paddleocr import PaddleOCR
 import threading
@@ -19,11 +20,11 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 for folder in FOLDERS:
     os.makedirs(os.path.join(DOWNLOAD_DIR, folder), exist_ok=True)
 
-DO_SPACES_REGION = "####"
-DO_SPACES_ENDPOINT = "#####"
-DO_SPACES_KEY = "#######"
-DO_SPACES_SECRET = "######"
-DO_SPACES_BUCKET = "#########"
+DO_SPACES_REGION = "sgp1"
+DO_SPACES_ENDPOINT = "https://sgp1.digitaloceanspaces.com"
+DO_SPACES_KEY = "DO801UTAA8KY7NAHHRC8"
+DO_SPACES_SECRET = "Hos62RJQmYVkARvJmk96xPXMG04p58SK5q/WTlzpycE"
+DO_SPACES_BUCKET = "pitmonitoring"
 
 s3 = boto3.client(
     's3',
@@ -45,6 +46,8 @@ state = {
     "log":                [],
     "simulation_running": True
 }
+
+last_heartbeat = {}
 
 def log(msg):
     now = datetime.now(timezone)
@@ -127,13 +130,17 @@ def detect_motor_plate(path: str):
             return "no_motor", None
 
 def process_folder(pit_idx: int):
-    folder_path = os.path.join(DOWNLOAD_DIR, FOLDERS[pit_idx])
+    today = datetime.now(timezone).strftime("%Y-%m-%d")
+    folder_path = os.path.join(DOWNLOAD_DIR, today, FOLDERS[pit_idx])
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path, exist_ok=True)
+        return  # Tidak ada file hari ini
+
     files = sorted([f for f in os.listdir(folder_path) if f.lower().endswith(('.jpg', '.jpeg', '.png'))])
     for fn in files:
         full_path = os.path.join(folder_path, fn)
         status, plate_text = detect_motor_plate(full_path)
         now = datetime.now(timezone)
-        ts = now.strftime("%H:%M:%S")
         prev_state = state["pit_log"][pit_idx]
         if status == "plate":
             if prev_state == "Empty":
@@ -162,13 +169,21 @@ def process_folder(pit_idx: int):
                 log(f"PIT{pit_idx+1} ➡ Motor Keluar")
         os.remove(full_path)
 
-
 def pit_worker(pit_idx: int):
     log(f"[THREAD] Worker PIT{pit_idx+1} dimulai")
     while True:
         if state["simulation_running"]:
             process_folder(pit_idx)
         time.sleep(2.0)
+        
+def heartbeat_monitor():
+    while True:
+        now = datetime.now(timezone)
+        for pit_id, last_time in list(last_heartbeat.items()):
+            delta = (now - last_time).total_seconds()
+            if delta > 60:
+                log(f"[OFFLINE] {pit_id} tidak aktif selama {int(delta)} detik")
+        time.sleep(10)
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -179,7 +194,9 @@ def on_startup():
     for idx in range(len(FOLDERS)):
         t = threading.Thread(target=pit_worker, args=(idx,), daemon=True)
         t.start()
-
+        
+    threading.Thread(target=heartbeat_monitor, daemon=True).start()
+  
 @app.get("/")
 def root():
     return HTMLResponse("<h3>ALPR Server Ready</h3>")
@@ -205,18 +222,26 @@ def get_state():
         "log": state["log"]
     })
 
+@app.post("/heartbeat")
+async def heartbeat(pit_id: str = Form(...)):
+    last_heartbeat[pit_id] = datetime.now(timezone)
+    log(f"[CAMERA] {pit_id} reconnecting {last_heartbeat[pit_id].strftime('%H:%M:%S')}")
+    return {"status": "ok"}
+
 @app.post("/upload")
 async def upload_image(pit: int = 0, file: UploadFile = File(...)):
     try:
         ext = os.path.splitext(file.filename)[-1]
         filename = f"{uuid4().hex}{ext}"
-        folder = FOLDERS[pit]
+        today = datetime.now(timezone).strftime("%Y-%m-%d")
+        folder = os.path.join(today, FOLDERS[pit])
         local_path = os.path.join(DOWNLOAD_DIR, folder, filename)
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
 
         with open(local_path, "wb") as f:
             f.write(await file.read())
 
-        remote_path = f"{folder}/{filename}"
+        remote_path = f"{today}/{FOLDERS[pit]}/{filename}"
         with open(local_path, "rb") as f:
             s3.upload_fileobj(
                 f,
@@ -225,7 +250,7 @@ async def upload_image(pit: int = 0, file: UploadFile = File(...)):
                 ExtraArgs={'ACL': 'private', 'ContentType': file.content_type}
             )
 
-        log(f"[UPLOAD] File diterima dari PIT{pit+1}: {filename}")
+        log(f"[UPLOAD] File dari PIT{pit+1} tersimpan: {remote_path}")
         return JSONResponse({"status": "uploaded", "path": remote_path})
 
     except (BotoCoreError, ClientError) as e:
