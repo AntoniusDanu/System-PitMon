@@ -12,12 +12,12 @@
 #include <lwip/sockets.h>
 #include <lwip/netdb.h>
 
-#define WIFI_SSID       "########"
-#define WIFI_PASS       "###########"
+#define WIFI_SSID       "##########"
+#define WIFI_PASS       "################"
 #define TAG "ESP32-CAM"
 #define LED_GPIO        GPIO_NUM_4
 #define PIT_ID          0  // Ganti sesuai ID PIT (0=P1, 1=P2, dst)
-#define BACKEND_URL     "http://<IP Add>:<port>/upload?pit=0"
+#define BACKEND_URL     "http://167.172.79.82:8000/upload?pit=0"
 
 #define PWDN_GPIO_NUM   32
 #define RESET_GPIO_NUM  -1
@@ -96,9 +96,9 @@ static void blink_led_error(void) {
 }
 
 static void test_dns_resolution() {
-    struct hostent *he = gethostbyname("https://10.10.12.113:8000/");
+    struct hostent *he = gethostbyname("https://167.172.79.82:8000/");
     if (he == NULL) {
-        ESP_LOGE(TAG, "❌ DNS lookup failed (gethostbyname)");
+        ESP_LOGW(TAG, "❌ DNS lookup failed (gethostbyname)");
     } else {
         ESP_LOGI(TAG, "✅ DNS lookup success. IP: %s", inet_ntoa(*(struct in_addr*)he->h_addr));
     }
