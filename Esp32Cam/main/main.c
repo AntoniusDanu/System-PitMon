@@ -12,12 +12,12 @@
 #include <lwip/sockets.h>
 #include <lwip/netdb.h>
 
-#define WIFI_SSID       "##########"
-#define WIFI_PASS       "################"
+#define WIFI_SSID       "vivo Y33S"
+#define WIFI_PASS       "arduinouno"
 #define TAG "ESP32-CAM"
 #define LED_GPIO        GPIO_NUM_4
-#define PIT_ID          0  // Ganti sesuai ID PIT (0=P1, 1=P2, dst)
-#define BACKEND_URL     "http://167.172.79.82:8000/upload?pit=0"
+#define PIT_ID          1  // Ganti sesuai ID PIT (0=P1, 1=P2, dst)
+#define BACKEND_FMT     "http://167.172.79.82:8000/upload?pit=0"      //Ganti BACKEND_URL atau BACKEND_FMT
 
 #define PWDN_GPIO_NUM   32
 #define RESET_GPIO_NUM  -1
@@ -77,7 +77,7 @@ static void init_led(void) {
         .intr_type = GPIO_INTR_DISABLE
     };
     gpio_config(&io_conf);
-    gpio_set_level(LED_GPIO, 1); // LED ON saat awal
+    gpio_set_level(LED_GPIO, 1); 
 }
 
 static void blink_led_success(void) {
@@ -96,11 +96,11 @@ static void blink_led_error(void) {
 }
 
 static void test_dns_resolution() {
-    struct hostent *he = gethostbyname("https://167.172.79.82:8000/");
+    struct hostent *he = gethostbyname("167.172.79.82");
     if (he == NULL) {
-        ESP_LOGW(TAG, "❌ DNS lookup failed (gethostbyname)");
+        ESP_LOGW(TAG, " DNS lookup failed (gethostbyname)");
     } else {
-        ESP_LOGI(TAG, "✅ DNS lookup success. IP: %s", inet_ntoa(*(struct in_addr*)he->h_addr));
+        ESP_LOGI(TAG, " DNS lookup success. IP: %s", inet_ntoa(*(struct in_addr*)he->h_addr));
     }
 }
 
@@ -124,12 +124,16 @@ static void connect_wifi(void) {
     // IP statis
     esp_netif_dhcpc_stop(netif);  // stop DHCP
 
-    // IP, gateway, dan netmask dikonversi menggunakan ip4addr_aton ke ip4_addr_t
+    // IP, gateway, dan netmask hotspot vivo
     ip4_addr_t ip, gw, netmask;
-    ip4addr_aton("10.10.12.50", &ip);     // ganti IP statik ESP32
-    ip4addr_aton("10.10.12.1", &gw);      // gateway, biasanya HP Android
-    ip4addr_aton("255.255.255.0", &netmask);
+    ip4addr_aton("192.168.234.50", &ip);      // IP statis ESP32 (pilih yang belum dipakai)
+    ip4addr_aton("192.168.234.181", &gw);     // Gateway = IP hotspot HP
+    ip4addr_aton("255.255.255.0", &netmask);  // Netmask dari subnet
 
+    /*ip4addr_aton("10.10.12.50", &ip);     // ganti IP statik ESP32
+    ip4addr_aton("10.10.12.1", &gw);      // gateway, wifi guest
+    ip4addr_aton("255.255.255.0", &netmask);*/
+    
     esp_netif_ip_info_t ip_info;
     ip_info.ip.addr = ip.addr;
     ip_info.gw.addr = gw.addr;
@@ -180,7 +184,7 @@ static void connect_wifi(void) {
 
 esp_err_t upload_image(uint8_t *image_buf, size_t image_len, int pit_id) {
     char url[256];
-    snprintf(url, sizeof(url), BACKEND_URL "%d", pit_id);
+    snprintf(url, sizeof(url), BACKEND_FMT "%d", pit_id); //ganti BACKEND_URL atau BACKEND_FMT
     ESP_LOGI(TAG, "Upload URL: %s", url);
 
     const char *boundary = "----esp32boundary";
@@ -200,7 +204,7 @@ esp_err_t upload_image(uint8_t *image_buf, size_t image_len, int pit_id) {
         .url = url,
         .timeout_ms = 10000,
         .transport_type = HTTP_TRANSPORT_OVER_TCP,
-      //  .cert_pem = ngrok_root_cert,                               // ✅ TIDAK verifikasi cert (unsafe)
+      //  .cert_pem = ngrok_root_cert,                               
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);
 
@@ -307,6 +311,32 @@ static void capture_and_upload_task(void *pvParameters) {
     }
 }
 
+static void task_heartbeat(void *pvParameters) {
+    while (1) {
+        esp_http_client_config_t config = {
+            .url = "http://167.172.79.82:8000/heartbeat",
+            .method = HTTP_METHOD_POST,
+            .timeout_ms = 5000,
+        };
+
+        esp_http_client_handle_t client = esp_http_client_init(&config);
+        esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
+
+        const char *post_data = "pit_id=PIT2";  // nama PIT
+        esp_http_client_set_post_field(client, post_data, strlen(post_data));
+
+        esp_err_t err = esp_http_client_perform(client);
+        if (err == ESP_OK) {
+            ESP_LOGI("HEARTBEAT", "Terkirim: %d", esp_http_client_get_status_code(client));
+        } else {
+            ESP_LOGW("HEARTBEAT", "Gagal: %s", esp_err_to_name(err));
+        }
+
+        esp_http_client_cleanup(client);
+        vTaskDelay(pdMS_TO_TICKS(30000)); 
+    }
+}
+
 void app_main(void) {
     nvs_flash_init();
     init_led();
@@ -314,4 +344,6 @@ void app_main(void) {
     test_dns_resolution();
     init_camera();
     xTaskCreate(capture_and_upload_task, "capture_and_upload_task", 8192, NULL, 5, NULL);
+    xTaskCreate(task_heartbeat, "task_heartbeat", 4096, NULL, 4, NULL);
+
 }
