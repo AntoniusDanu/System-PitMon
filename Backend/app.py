@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import Form  # Tambahkan jika belum ada
+from fastapi import Form 
 from ultralytics import YOLO
 from paddleocr import PaddleOCR
 import threading
@@ -56,17 +56,17 @@ def log(msg):
     print(line)
     state["log"].append(line)
 
-
-def detect_motor_plate(path: str):
+def detect_motor_plate(path: str, save_crop=False, save_dir=None):
     log(f"[DETECT] Proses file: {path}")
     img = cv2.imread(path)
     if img is None:
         log("[ERROR] Gagal membaca gambar")
-        return "error", None
+        return "error", None, None
 
     h_orig, w_orig, _ = img.shape
     img_resized = cv2.resize(img, (640, 640))
     motor_res = motor_model(img_resized, classes=[3], conf=0.2)[0]
+
     if motor_res.boxes:
         best_motor = max(motor_res.boxes, key=lambda b: float(b.conf[0]))
         x1m, y1m, x2m, y2m = map(int, best_motor.xyxy[0])
@@ -84,11 +84,18 @@ def detect_motor_plate(path: str):
         y2c = min(y2o + dy, h_orig - 1)
         roi_motor = img[y1c:y2c, x1c:x2c]
         if roi_motor.size == 0:
-            return "motor", None
+            return "motor", None, None
         roi_resized = cv2.resize(roi_motor, (640, 640))
         plate_res = plate_model(roi_resized, conf=0.2)[0]
         if not plate_res.boxes:
-            return "motor", None
+            # hanya motor tanpa plat
+            if save_crop and save_dir:
+                fname = f"motor_{os.path.basename(path)}"
+                save_path = os.path.join(save_dir, fname)
+                cv2.imwrite(save_path, roi_motor)
+                return "motor", None, save_path
+            return "motor", None, None
+
         best_plate = max(plate_res.boxes, key=lambda b: float(b.conf[0]))
         x1p, y1p, x2p, y2p = map(int, best_plate.xyxy[0])
         rh, rw, _ = roi_motor.shape
@@ -100,17 +107,25 @@ def detect_motor_plate(path: str):
         abs_y2p = int(y2p * scale_py) + y1c
         crop_plate = img[abs_y1p:abs_y2p, abs_x1p:abs_x2p]
         if crop_plate.size == 0:
-            return "motor", None
+            return "motor", None, None
+
         ocr_res = ocr_model.ocr(crop_plate, cls=True)
         if ocr_res and ocr_res[0]:
             plate_text = ocr_res[0][0][1][0]
-            return "plate", plate_text
+            if save_crop and save_dir:
+                fname = f"plate_{os.path.basename(path)}"
+                save_path = os.path.join(save_dir, fname)
+                cv2.imwrite(save_path, crop_plate)
+                return "plate", plate_text, save_path
+            return "plate", plate_text, None
         else:
-            return "motor", None
+            return "motor", None, None
+
     else:
+        # tidak ada motor, coba deteksi plat saja
         plate_res = plate_model(img_resized, conf=0.2)[0]
         if not plate_res.boxes:
-            return "no_motor", None
+            return "no_motor", None, None
         best_plate = max(plate_res.boxes, key=lambda b: float(b.conf[0]))
         x1p, y1p, x2p, y2p = map(int, best_plate.xyxy[0])
         scale_x = w_orig / 640
@@ -121,13 +136,18 @@ def detect_motor_plate(path: str):
         y2 = int(y2p * scale_y)
         crop_plate = img[y1:y2, x1:x2]
         if crop_plate.size == 0:
-            return "no_motor", None
+            return "no_motor", None, None
         ocr_res = ocr_model.ocr(crop_plate, cls=True)
         if ocr_res and ocr_res[0]:
             plate_text = ocr_res[0][0][1][0]
-            return "plate", plate_text
+            if save_crop and save_dir:
+                fname = f"plate_{os.path.basename(path)}"
+                save_path = os.path.join(save_dir, fname)
+                cv2.imwrite(save_path, crop_plate)
+                return "plate", plate_text, save_path
+            return "plate", plate_text, None
         else:
-            return "no_motor", None
+            return "no_motor", None, None
 
 def process_folder(pit_idx: int):
     today = datetime.now(timezone).strftime("%Y-%m-%d")
@@ -139,7 +159,7 @@ def process_folder(pit_idx: int):
     files = sorted([f for f in os.listdir(folder_path) if f.lower().endswith(('.jpg', '.jpeg', '.png'))])
     for fn in files:
         full_path = os.path.join(folder_path, fn)
-        status, plate_text = detect_motor_plate(full_path)
+        status, plate_text, _ = detect_motor_plate(full_path)
         now = datetime.now(timezone)
         prev_state = state["pit_log"][pit_idx]
         if status == "plate":
@@ -182,7 +202,7 @@ def heartbeat_monitor():
         for pit_id, last_time in list(last_heartbeat.items()):
             delta = (now - last_time).total_seconds()
             if delta > 60:
-                log(f"[OFFLINE] {pit_id} tidak aktif selama {int(delta)} detik")
+                log(f"[OFFLINE] {pit_id} tidak aktif ")
         time.sleep(10)
 
 app = FastAPI()
@@ -238,11 +258,26 @@ async def upload_image(pit: int = 0, file: UploadFile = File(...)):
         local_path = os.path.join(DOWNLOAD_DIR, folder, filename)
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
 
+        # Simpan file sementara ke lokal
         with open(local_path, "wb") as f:
             f.write(await file.read())
 
-        remote_path = f"{today}/{FOLDERS[pit]}/{filename}"
-        with open(local_path, "rb") as f:
+        # Jalankan deteksi
+        status, plate_text, result_path = detect_motor_plate(
+            local_path, save_crop=True, save_dir=os.path.dirname(local_path)
+        )
+
+        # Hapus file jika tidak ada motor/plat
+        if status not in ["motor", "plate"]:
+          #  log(f"[SKIP] Gambar dari PIT{pit+1} diabaikan karena tidak terdeteksi: {status}")
+            os.remove(local_path)
+            return JSONResponse({"status": "ignored", "reason": status})
+
+        # Upload file hasil deteksi (bisa crop, bisa original)
+        upload_path = result_path or local_path
+        remote_path = f"{today}/{FOLDERS[pit]}/{os.path.basename(upload_path)}"
+
+        with open(upload_path, "rb") as f:
             s3.upload_fileobj(
                 f,
                 DO_SPACES_BUCKET,
