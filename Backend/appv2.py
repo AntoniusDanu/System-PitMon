@@ -70,31 +70,63 @@ def save_daily_log():
 
     per_pit_summary = [{"pit": f"PIT {i+1}", "data": []} for i in range(5)]
 
-    for log_entry in state["summary"]:
-        if "PIT" in log_entry and "OUT" in log_entry:
-            pit_num = int(log_entry.split("OUT:")[0].replace("PIT", "").strip()) - 1
-            plate_info = log_entry.split("OUT:")[1].strip()
-            plate, dur_info = plate_info.split(" (Durasi: ")
-            durasi = dur_info.replace(")", "")
-            now = datetime.now(timezone)
-            masuk_time = state["pit_time"][pit_num].strftime("%H:%M:%S") if state["pit_time"][pit_num] else "--:--:--"
+    # Simpan data motor keluar dari summary
+    for entry in state["summary"]:
+        if isinstance(entry, dict):  # format baru
+            pit_num = int(entry["pit"].replace("PIT", "").strip()) - 1
             per_pit_summary[pit_num]["data"].append({
-                "plate": plate.strip(),
-                "masuk": masuk_time,
-                "keluar": now.strftime("%H:%M:%S"),
-                "duration": durasi
+                "plate": entry["plate"],
+                "masuk": entry["masuk"],
+                "keluar": entry["keluar"],
+                "duration": entry["duration"]
+            })
+        elif isinstance(entry, str) and "PIT" in entry and "OUT" in entry:
+            # fallback parsing log lama
+            try:
+                pit_num = int(entry.split("OUT:")[0].replace("PIT", "").strip()) - 1
+                plate_info = entry.split("OUT:")[1].strip()
+                plate, dur_info = plate_info.split(" (Durasi: ")
+                durasi = dur_info.replace(")", "")
+                per_pit_summary[pit_num]["data"].append({
+                    "plate": plate.strip(),
+                    "masuk": "--:--:--",
+                    "keluar": "--:--:--",
+                    "duration": durasi
+                })
+            except Exception as e:
+                log(f"[WARN] Gagal parsing log lama: {entry} | {e}")
+
+    # Tambahkan kendaraan yang masih ada di PIT
+    for i in range(5):
+        if state["pit_log"][i] != "Empty":
+            plate = state["pit_log"][i]
+            masuk_time = state["pit_time"][i]
+            masuk_str = masuk_time.strftime("%H:%M:%S") if masuk_time else "--:--:--"
+            per_pit_summary[i]["data"].append({
+                "plate": plate,
+                "masuk": masuk_str,
+                "keluar": "-",
+                "duration": "-"
             })
 
     daily_data = {
         "pit_log": state["pit_log"],
         "ping_status": ping_status,
         "summary_count": count_summary(state["summary"]),
-        "per_pit_summary": per_pit_summary,
-        "log": state["log"][-100:]
+        "per_pit_summary": per_pit_summary
     }
 
     with open(log_path, "w") as f:
         json.dump(daily_data, f, indent=2)
+
+def count_summary(summary_list):
+    count_per_pit = {}
+    for item in summary_list:
+        pit = item["pit"]
+        if pit not in count_per_pit:
+            count_per_pit[pit] = 0
+        count_per_pit[pit] += 1
+    return [{"pit": pit, "total": total} for pit, total in count_per_pit.items()]
 
 
 def upload_log_to_spaces():
@@ -103,14 +135,6 @@ def upload_log_to_spaces():
     remote_path = f"datalog/{today}.json"
     with open(log_path, "rb") as f:
         s3.upload_fileobj(f, DO_SPACES_BUCKET, remote_path, ExtraArgs={'ACL': 'private'})
-
-def count_summary(summary_list):
-    count = {}
-    for entry in summary_list:
-        if "PIT" in entry and "OUT" in entry:
-            pit = entry.split()[0]
-            count[pit] = count.get(pit, 0) + 1
-    return [{"pit": k, "total": v} for k, v in count.items()]
     
 #===DETEKSI=====
 def detect_motor_plate(path: str, save_crop=False, save_dir=None):
@@ -205,7 +229,7 @@ def detect_motor_plate(path: str, save_crop=False, save_dir=None):
             return "plate", plate_text, None
         else:
             return "no_motor", None, None
-            
+
 def process_folder(pit_idx: int):
     today = datetime.now(timezone).strftime("%Y-%m-%d")
     folder_path = os.path.join(DOWNLOAD_DIR, today, FOLDERS[pit_idx])
@@ -219,6 +243,7 @@ def process_folder(pit_idx: int):
         status, plate_text, _ = detect_motor_plate(full_path)
         now = datetime.now(timezone)
         prev_state = state["pit_log"][pit_idx]
+
         if status == "plate":
             if prev_state == "Empty":
                 state["pit_log"][pit_idx] = plate_text
@@ -227,23 +252,31 @@ def process_folder(pit_idx: int):
             elif prev_state == "Motor":
                 state["pit_log"][pit_idx] = plate_text
                 log(f"PIT{pit_idx+1} Plat Dikenali: {plate_text}")
+
         elif status == "motor":
             if prev_state == "Empty":
                 state["pit_log"][pit_idx] = "Motor"
                 state["pit_time"][pit_idx] = now
                 log(f"PIT{pit_idx+1} ⬅ Motor (tanpa plat)")
+
         elif status == "no_motor":
             if prev_state != "Empty":
                 masuk = state["pit_time"][pit_idx]
                 dur = (now - masuk).total_seconds() if masuk else 0
                 h, rem = divmod(dur, 3600)
                 m, s = divmod(rem, 60)
-                state["summary"].append(
-                    f"PIT{pit_idx+1} OUT: {prev_state} (Durasi: {int(h):02}:{int(m):02}:{int(s):02})"
-                )
+                state["summary"].append({
+                    "pit": f"PIT {pit_idx+1}",
+                    "plate": prev_state,
+                    "masuk": masuk.strftime("%H:%M:%S") if masuk else "--:--:--",
+                    "keluar": now.strftime("%H:%M:%S"),
+                    "duration": f"{int(h):02}:{int(m):02}:{int(s):02}"
+                })
+
                 state["pit_log"][pit_idx] = "Empty"
                 state["pit_time"][pit_idx] = None
                 log(f"PIT{pit_idx+1} ➡ Motor Keluar")
+
         os.remove(full_path)
 
 def pit_worker(pit_idx: int):
@@ -269,26 +302,33 @@ def heartbeat_monitor():
             else:
                 ping_status[pit_index] = "inactive"
         time.sleep(10)
-        
+
 def generate_full_pit_summary():
-    result = []
+    result = [{"pit": f"PIT {i+1}", "data": []} for i in range(5)]
+
+    # Tambahkan motor yang sudah keluar dari summary
+    for entry in state["summary"]:
+        pit_num = int(entry["pit"].replace("PIT", "").strip()) - 1
+        result[pit_num]["data"].append({
+            "plate": entry["plate"],
+            "masuk": entry["masuk"],
+            "keluar": entry["keluar"],
+            "duration": entry["duration"]
+        })
+
+    # Tambahkan motor yang masih ada di PIT
     for i in range(5):
         if state["pit_log"][i] != "Empty":
+            plate = state["pit_log"][i]
             masuk_time = state["pit_time"][i]
-            dur = int((datetime.now(timezone) - masuk_time).total_seconds()) if masuk_time else 0
-            h, rem = divmod(dur, 3600)
-            m, s = divmod(rem, 60)
-            result.append({
-                "pit": f"PIT {i+1}",
-                "data": [{
-                    "plate": state["pit_log"][i],
-                    "masuk": masuk_time.strftime("%H:%M:%S") if masuk_time else "--:--:--",
-                    "keluar": "-",
-                    "duration": f"{h:02}:{m:02}:{s:02}"
-                }]
+            masuk_str = masuk_time.strftime("%H:%M:%S") if masuk_time else "--:--:--"
+            result[i]["data"].append({
+                "plate": plate,
+                "masuk": masuk_str,
+                "keluar": "-",
+                "duration": "-"
             })
-        else:
-            result.append({"pit": f"PIT {i+1}", "data": []})
+
     return result
 
 app = FastAPI()
@@ -405,9 +445,14 @@ async def upload_image(pit: int = 0, file: UploadFile = File(...)):
                 dur = (now - masuk).total_seconds() if masuk else 0
                 h, rem = divmod(dur, 3600)
                 m, s = divmod(rem, 60)
-                state["summary"].append(
-                    f"PIT{pit+1} OUT: {prev_state} (Durasi: {int(h):02}:{int(m):02}:{int(s):02})"
-                )
+                state["summary"].append({
+                    "pit": f"PIT {pit+1}",
+                    "plate": prev_state,
+                    "masuk": masuk.strftime("%H:%M:%S") if masuk else "--:--:--",
+                    "keluar": now.strftime("%H:%M:%S"),
+                    "duration": f"{int(h):02}:{int(m):02}:{int(s):02}"
+                })
+
                 state["pit_log"][pit] = "Empty"
                 state["pit_time"][pit] = None
                 log(f"PIT{pit+1} ➡ Motor Keluar")
