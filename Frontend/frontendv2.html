@@ -251,7 +251,7 @@
   </div>
   
   <script>
-  const BASE_URL = "http://10.10.12.113:8000";
+  const BASE_URL = "http://167.172.79.82:8000";
 
   function initPitCards() {
     const pitCards = document.getElementById("pit-summary-cards");
@@ -379,39 +379,38 @@
   }
 
   async function loadLogDates() {
-    try {
-      const res = await fetch(`${BASE_URL}/log_dates`);
-      const data = await res.json();
-      const dropdown = document.getElementById("log-date-dropdown");
-      dropdown.innerHTML = `<option value="">REAL TIME</option>`;
-      if (data.dates && Array.isArray(data.dates)) {
-        data.dates.forEach(date => {
-          const option = document.createElement("option");
-          option.value = date;
-          option.text = date;
-          dropdown.appendChild(option);
-        });
+  try {
+    const res = await fetch(`${BASE_URL}/log_dates`);
+    const data = await res.json();
 
-        const today = new Date().toISOString().split("T")[0];
-        const todayOption = [...dropdown.options].find(opt => opt.value === today);
-        if (todayOption) {
-          dropdown.value = today;
-          await fetchStateByDate(today);
-        }
-      }
+    const dropdown = document.getElementById("log-date-dropdown");
+    dropdown.innerHTML = `<option value="">REAL TIME</option>`;
 
-      dropdown.addEventListener("change", async () => {
-        const selected = dropdown.value;
-        if (selected) {
-          await fetchStateByDate(selected);
-        } else {
-          await fetchState();
-        }
+    if (data.dates && Array.isArray(data.dates)) {
+      data.dates.forEach(date => {
+        const option = document.createElement("option");
+        option.value = date;
+        option.text = date;
+        dropdown.appendChild(option);
       });
-    } catch (err) {
-      console.error("Gagal memuat tanggal log:", err);
+
+      // Jangan pilih tanggal hari ini secara otomatis, biarkan tetap di REAL TIME
+      dropdown.value = "";
     }
+
+    // Tambahkan event listener untuk dropdown
+    dropdown.addEventListener("change", async () => {
+      const selected = dropdown.value;
+      if (selected) {
+        await fetchStateByDate(selected);
+      } else {
+        await fetchState();  // real time
+      }
+    });
+  } catch (err) {
+    console.error("Gagal memuat tanggal log:", err);
   }
+}
 
   document.addEventListener("DOMContentLoaded", () => {
     loadLogDates();
@@ -421,6 +420,5 @@
     setInterval(fetchState, 1000);
   });
 </script>
-
 </body>
 </html>
