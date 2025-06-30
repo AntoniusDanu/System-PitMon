@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Monitoring PIT Bengkel - ALPR System</title>
+  <link href="https://fonts.googleapis.com/css2?family=Lato:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Lato', sans-serif;
+      margin: 20px;
+      background: linear-gradient(145deg, #d6d6d6, #c0c0c0, #a9a9a9);
+    }
+    h1, h2, h3 {
+      font-weight: 700;
+    }
+    .main-container {
+      display: grid;
+      grid-template-columns: 3fr 1fr;
+      gap: 25px;
+      min-height: 150vh;
+    }
+    .pit-container, .control-panel {
+      background: white;
+      padding: 20px;
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+      border: 1px solid black;
+    }
+    .pit-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 15px;
+      border: 0.5px solid black;
+    }
+    .pit-table th {
+      background: #7f8c8d;
+      color: white;
+      padding: 15px;
+      text-align: center;
+      border: 0.5px solid black;
+      max-width: 120px;
+    }
+    .pit-table td {
+      padding: 12px;
+      border: 0.5px solid black;
+      text-align: center;
+      max-width: 120px;
+    }
+    .pit-table td, .pit-table th {
+      width: 120px;
+    }
+    .status-empty {
+      color: #95a5a6;
+      font-weight: 500;
+    }
+    .status-occupied {
+      background: #fbeaea;
+      color: #c0392b;
+      padding: 4px 8px;
+      border-radius: 4px;
+    }
+    .status-active {
+      background: #ccffcc;
+      color: #006600;
+      font-weight: bold;
+      padding: 4px 8px;
+      border-radius: 4px;
+    }
+    .status-inactive {
+      background: #ffcccc;
+      color: #b30000;
+      font-weight: bold;
+      padding: 4px 8px;
+      border-radius: 4px;
+    }
+    .activity-log h3, .summary-section h3 {
+      background: #c0c0c0;
+      color: black;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 18px;
+      margin-top: 0;
+      margin-bottom: 10px;
+    }
+    .activity-log {
+      margin-top: 20px;
+      background: #f8f9fa;
+      padding: 15px;
+      border-radius: 8px;
+    }
+    .log-entry {
+      max-width: 100%;
+      overflow-wrap: break-word;
+      word-break: break-all;
+      white-space: pre-wrap;
+      background-color: #f5f5f5;
+      border-radius: 6px;
+      padding: 10px;
+      margin-bottom: 8px;
+      font-family: sans-serif;
+      font-size: 14px;
+      overflow: hidden;
+    }
+    #log-list {
+      max-height: 400px;
+      overflow-y: auto;
+      border: 1px solid #ccc;
+      padding-right: 8px;
+    }
+    #log-list::-webkit-scrollbar {
+      width: 6px;
+    }
+    #log-list::-webkit-scrollbar-thumb {
+      background-color: #bbb;
+      border-radius: 4px;
+    }
+    .summary-section {
+      margin-top: 25px;
+      background: #ffffff;
+      padding: 20px;
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      border: 1px solid #000000;
+      min-height: 110vh;
+    }
+    .pit-cards-container {
+      display: flex;
+      gap: 15px;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin-bottom: 15px;
+    }
+    .pit-card {
+      background: #f0f8ff;
+      border: 2px solid #000000;
+      border-radius: 10px;
+      padding: 10px 15px;
+      min-width: 120px;
+      text-align: center;
+      box-shadow: 2px 2px 6px rgba(0,0,0,0.1);
+    }
+    .pit-card h4 {
+      margin: 0 0 5px;
+      font-size: 16px;
+      color: #2c3e50;
+    }
+    .pit-card p {
+      margin: 0;
+      font-size: 18px;
+      font-weight: bold;
+      color: #ef2929;
+    }
+    .section-divider {
+      border: none;
+      height: 1px;
+      background-color: #ccc;
+      margin: 10px 0 30px;
+    }
+    .recap-title {
+      text-align: center;
+      font-size: 18px;
+      margin: 10px 0 15px;
+      color: #000000;
+      font-weight: 700;
+    }
+    .summary-title {
+      font-size: 25px;
+      margin: 10px 0 15px;
+      color: #000000;
+      font-weight: 700;
+    }
+    .entry-title {
+      text-align: center;
+      font-size: 18px;
+      margin: 10px 0 15px;
+      color: #000000;
+      font-weight: 800;
+    }
+    .pit-summary-box {
+      border: 1px solid #bbb;
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 10px;
+      background-color: #ffffff;
+      box-shadow: 1px 1px 4px rgba(0,0,0,0.1);
+    }
+    .pit-summary-box h4 {
+      margin: 0 0 8px;
+      font-size: 16px;
+      color: #2c3e50;
+    }
+    .pit-summary-box ul {
+      padding-left: 20px;
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+  <h1>Monitoring PIT Bengkel Motor</h1>
+  <div class="main-container">
+    <div>
+      <div class="pit-container">
+        <h2>Status PIT Real Time</h2>
+        <table class="pit-table">
+          <thead>
+            <tr>
+              <th>PIT 1</th>
+              <th>PIT 2</th>
+              <th>PIT 3</th>
+              <th>PIT 4</th>
+              <th>PIT 5</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr id="pit-status-row">
+              <td class="status-empty">Empty</td>
+              <td class="status-empty">Empty</td>
+              <td class="status-empty">Empty</td>
+              <td class="status-empty">Empty</td>
+              <td class="status-empty">Empty</td>
+            </tr>
+            <tr id="pit-connectivity-row">
+              <td class="status-inactive">INACTIVE</td>
+              <td class="status-inactive">INACTIVE</td>
+              <td class="status-inactive">INACTIVE</td>
+              <td class="status-inactive">INACTIVE</td>
+              <td class="status-inactive">INACTIVE</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="summary-section" style="margin-top: 20px;">
+        <h4 class="summary-title">Summary</h4>
+        <label for="log-date-dropdown" style="font-weight: bold;">Monitoring Date:</label>
+        <select id="log-date-dropdown" style="margin-bottom: 10px; padding: 6px 8px; border-radius: 6px; border: 1px solid #000000;">
+          <option value="">REAL TIME</option>
+       </select>
+        <h4 class="recap-title">Vehicle Recap</h4>
+        <div id="pit-summary-cards" class="pit-cards-container"></div>
+        <hr class="section-divider">
+        <h4 class="entry-title">PIT Entry List</h4>
+        <div id="summary-list"></div>
+      </div>
+    </div>
+    <div class="control-panel">
+      <div class="activity-log">
+        <h3>Log Activity</h3>
+        <div id="log-list"></div>
+      </div>
+    </div>
+  </div>
+  
+  <script>
+  const BASE_URL = "http://10.10.12.113:8000";
+
+  function initPitCards() {
+    const pitCards = document.getElementById("pit-summary-cards");
+    pitCards.innerHTML = "";
+    for (let i = 1; i <= 5; i++) {
+      const card = document.createElement("div");
+      card.className = "pit-card";
+      card.id = `pit-card-${i}`;
+      card.innerHTML = `<h4>PIT ${i}</h4><p id="pit-count-${i}">0</p>`;
+      pitCards.appendChild(card);
+    }
+  }
+
+  function updatePitCounts(counts) {
+    for (let i = 1; i <= 5; i++) {
+      const countElement = document.getElementById(`pit-count-${i}`);
+      if (countElement) {
+        countElement.textContent = counts[i - 1];
+      }
+    }
+  }
+
+  function renderDefaultSummaryList() {
+    const summary = document.getElementById("summary-list");
+    summary.innerHTML = "";
+    for (let i = 1; i <= 5; i++) {
+      const div = document.createElement("div");
+      div.className = "pit-summary-box";
+      div.innerHTML = `<h4>PIT ${i}</h4><ul><li>Empty</li></ul>`;
+      summary.appendChild(div);
+    }
+  }
+
+  function renderMonitoringState(data) {
+    const pitRow = document.getElementById("pit-status-row");
+    pitRow.innerHTML = "";
+    data.pit_log.forEach(status => {
+      const td = document.createElement("td");
+      if (status === "Empty") {
+        td.className = "status-empty";
+        td.innerText = "Empty";
+      } else {
+        td.className = "status-occupied";
+        const [plate, durasiRaw] = status.split(" (");
+        const durasi = durasiRaw ? durasiRaw.replace(")", "") : "";
+        td.innerHTML = `<strong>${plate}</strong><br><span style="font-size: 0.85em;">⏱ ${durasi}</span>`;
+      }
+      pitRow.appendChild(td);
+    });
+
+    const connRow = document.getElementById("pit-connectivity-row");
+    connRow.innerHTML = "";
+    (data.ping_status || []).forEach(status => {
+      const td = document.createElement("td");
+      td.className = (status === "inactive") ? "status-inactive" : "status-active";
+      td.innerText = status.toUpperCase();
+      connRow.appendChild(td);
+    });
+
+    const logs = document.getElementById("log-list");
+    logs.innerHTML = "";
+    (data.log || []).slice().reverse().forEach(entry => {
+      const div = document.createElement("div");
+      div.className = "log-entry";
+      div.innerText = entry;
+      logs.appendChild(div);
+    });
+
+    // Reset semua PIT card ke 0
+    for (let i = 1; i <= 5; i++) {
+      const el = document.getElementById(`pit-count-${i}`);
+      if (el) el.textContent = "0";
+    }
+
+    // Update dari summary_count
+    (data.summary_count || []).forEach(({ pit, total }) => {
+      const num = pit.replace("PIT", "").trim();
+      const countElement = document.getElementById(`pit-count-${num}`);
+      if (countElement) {
+        countElement.textContent = total;
+      }
+    });
+
+    const summary = document.getElementById("summary-list");
+    summary.innerHTML = "";
+    (data.per_pit_summary || []).forEach(({ pit, data }) => {
+      const div = document.createElement("div");
+      div.className = "pit-summary-box";
+      let content = `<h4>${pit}</h4><ul>`;
+      if (data.length === 0) {
+        content += `<li>Empty</li>`;
+      } else {
+        data.forEach(item => {
+          content += `
+            <li>Plat: ${item.plate}</li>
+            <li>Masuk: ${item.masuk}</li>
+            <li>Keluar: ${item.keluar}</li>
+            <li>Durasi: ${item.duration}</li>
+            <hr/>
+          `;
+        });
+      }
+      content += "</ul>";
+      div.innerHTML = content;
+      summary.appendChild(div);
+    });
+  }
+
+  async function fetchState() {
+    const selectedDate = document.getElementById("log-date-dropdown")?.value || "";
+    const dateQuery = selectedDate ? `?date=${selectedDate}` : "";
+    const res = await fetch(`${BASE_URL}/state${dateQuery}`);
+    const data = await res.json();
+    renderMonitoringState(data);
+  }
+
+  async function fetchStateByDate(date) {
+    const res = await fetch(`${BASE_URL}/state?date=${date}`);
+    if (!res.ok) {
+      alert("Data log untuk tanggal ini tidak ditemukan.");
+      return;
+    }
+    const data = await res.json();
+    renderMonitoringState(data);
+  }
+
+  async function loadLogDates() {
+    try {
+      const res = await fetch(`${BASE_URL}/log_dates`);
+      const data = await res.json();
+      const dropdown = document.getElementById("log-date-dropdown");
+      dropdown.innerHTML = `<option value="">REAL TIME</option>`;
+      if (data.dates && Array.isArray(data.dates)) {
+        data.dates.forEach(date => {
+          const option = document.createElement("option");
+          option.value = date;
+          option.text = date;
+          dropdown.appendChild(option);
+        });
+
+        const today = new Date().toISOString().split("T")[0];
+        const todayOption = [...dropdown.options].find(opt => opt.value === today);
+        if (todayOption) {
+          dropdown.value = today;
+          await fetchStateByDate(today);
+        }
+      }
+
+      dropdown.addEventListener("change", async () => {
+        const selected = dropdown.value;
+        if (selected) {
+          await fetchStateByDate(selected);
+        } else {
+          await fetchState();
+        }
+      });
+    } catch (err) {
+      console.error("Gagal memuat tanggal log:", err);
+    }
+  }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    loadLogDates();
+    initPitCards(); // tampilkan awal
+    renderDefaultSummaryList(); // tampilkan default summary PIT
+    fetchState();
+    setInterval(fetchState, 1000);
+  });
+</script>
+
+</body>
+</html>
