@@ -12,12 +12,12 @@
 #include <lwip/sockets.h>
 #include <lwip/netdb.h>
 
-#define WIFI_SSID       "vivo Y33S"
-#define WIFI_PASS       "arduinouno"
+#define WIFI_SSID       "BRT ELECTRIC GUEST"//"BRT Juken"
+#define WIFI_PASS       "Transformasi2027"//"A1b2c3d4e5"
 #define TAG "ESP32-CAM"
 #define LED_GPIO        GPIO_NUM_4
-#define PIT_ID          1  // Ganti sesuai ID PIT (0=P1, 1=P2, dst)
-#define BACKEND_FMT     "http://167.172.79.82:8000/upload?pit=0"      //Ganti BACKEND_URL atau BACKEND_FMT
+#define PIT_ID          0  // Ganti sesuai ID PIT (0=P1, 1=P2, dst)
+#define BACKEND_FMT     "http://167.172.79.82:8000/upload"      //Ganti BACKEND_URL atau BACKEND_FMT
 
 #define PWDN_GPIO_NUM   32
 #define RESET_GPIO_NUM  -1
@@ -109,10 +109,62 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
-    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+    } 
+    else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        ESP_LOGW(TAG, "WiFi terputus. Mencoba reconnect...");
+        esp_wifi_connect();
+    } 
+    else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
     }
 }
+
+/*
+static void connect_wifi(void) {
+    wifi_event_group = xEventGroupCreate();
+
+    esp_netif_init();
+    esp_event_loop_create_default();
+    esp_netif_t *netif = esp_netif_create_default_wifi_sta();
+
+    // Pastikan DHCP aktif
+    esp_netif_dhcpc_stop(netif);  // optional safe reset
+    esp_netif_dhcpc_start(netif);
+
+    // WiFi init
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_wifi_init(&cfg);
+
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid = WIFI_SSID,
+            .password = WIFI_PASS,
+        },
+    };
+
+    esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL);
+    esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL);
+
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    esp_wifi_start();
+
+    // Tunggu koneksi WiFi
+    EventBits_t bits = xEventGroupWaitBits(wifi_event_group,
+                                           WIFI_CONNECTED_BIT,
+                                           pdFALSE,
+                                           pdFALSE,
+                                           pdMS_TO_TICKS(10000));
+
+    if (bits & WIFI_CONNECTED_BIT) {
+        ESP_LOGI(TAG, "WiFi connected (DHCP)");
+        blink_led_success();
+    } else {
+        ESP_LOGE(TAG, "WiFi connection failed");
+        blink_led_error();
+    }
+}*/
+
 
 static void connect_wifi(void) {
     wifi_event_group = xEventGroupCreate();
@@ -126,13 +178,13 @@ static void connect_wifi(void) {
 
     // IP, gateway, dan netmask hotspot vivo
     ip4_addr_t ip, gw, netmask;
-    ip4addr_aton("192.168.234.50", &ip);      // IP statis ESP32 (pilih yang belum dipakai)
+  /*  ip4addr_aton("192.168.234.50", &ip);      // IP statis ESP32 (pilih yang belum dipakai)
     ip4addr_aton("192.168.234.181", &gw);     // Gateway = IP hotspot HP
-    ip4addr_aton("255.255.255.0", &netmask);  // Netmask dari subnet
+    ip4addr_aton("255.255.255.0", &netmask);  // Netmask dari subnet */
 
-    /*ip4addr_aton("10.10.12.50", &ip);     // ganti IP statik ESP32
+    ip4addr_aton("10.10.12.50", &ip);     // ganti IP statik ESP32
     ip4addr_aton("10.10.12.1", &gw);      // gateway, wifi guest
-    ip4addr_aton("255.255.255.0", &netmask);*/
+    ip4addr_aton("255.255.255.0", &netmask);// 
     
     esp_netif_ip_info_t ip_info;
     ip_info.ip.addr = ip.addr;
@@ -180,11 +232,11 @@ static void connect_wifi(void) {
         ESP_LOGE(TAG, " WiFi connection failed");
         blink_led_error();
     }
-}
+} 
 
 esp_err_t upload_image(uint8_t *image_buf, size_t image_len, int pit_id) {
     char url[256];
-    snprintf(url, sizeof(url), BACKEND_FMT "%d", pit_id); //ganti BACKEND_URL atau BACKEND_FMT
+    snprintf(url, sizeof(url), BACKEND_FMT "?pit=%d", pit_id); //ganti BACKEND_URL atau BACKEND_FMT
     ESP_LOGI(TAG, "Upload URL: %s", url);
 
     const char *boundary = "----esp32boundary";
@@ -322,7 +374,7 @@ static void task_heartbeat(void *pvParameters) {
         esp_http_client_handle_t client = esp_http_client_init(&config);
         esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
 
-        const char *post_data = "pit_id=PIT2";  // nama PIT
+        const char *post_data = "pit_id=PIT1";  // nama PIT
         esp_http_client_set_post_field(client, post_data, strlen(post_data));
 
         esp_err_t err = esp_http_client_perform(client);
