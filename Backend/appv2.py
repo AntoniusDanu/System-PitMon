@@ -3,6 +3,7 @@ import time
 import cv2
 import json
 from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, File, UploadFile, Form, Request
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -135,8 +136,49 @@ def upload_log_to_spaces():
     remote_path = f"datalog/{today}.json"
     with open(log_path, "rb") as f:
         s3.upload_fileobj(f, DO_SPACES_BUCKET, remote_path, ExtraArgs={'ACL': 'private'})
+
+def reset_state_for_new_day():
+    log("[RESET] Menyimpan log harian dan reset state untuk hari baru")
+    save_daily_log()
+    upload_log_to_spaces()
+
+    # Reset state
+    state["summary"] = []
+    state["log"] = []
+    state["pit_log"] = ["Empty"] * 5
+    state["pit_time"] = [None] * 5
+
+def daily_reset_scheduler():
+    log("[SCHEDULER] Thread reset harian dimulai")
+    while True:
+        now = datetime.now(timezone)
+        next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        wait_seconds = (next_midnight - now).total_seconds()
+        log(f"[SCHEDULER] Menunggu {int(wait_seconds)} detik sampai 00:00")
+        time.sleep(wait_seconds)
+
+        reset_state_for_new_day()
+
+def sync_logs_from_spaces():
+    log("[SYNC] Sinkronisasi awal log harian dari DigitalOcean Spaces")
+    try:
+        result = s3.list_objects_v2(Bucket=DO_SPACES_BUCKET, Prefix="datalog/")
+        if "Contents" in result:
+            for obj in result["Contents"]:
+                key = obj["Key"]
+                if key.endswith(".json"):
+                    fname = os.path.basename(key)
+                    local_path = os.path.join(LOG_DIR, fname)
+                    if not os.path.exists(local_path):
+                        with open(local_path, "wb") as f:
+                            s3.download_fileobj(DO_SPACES_BUCKET, key, f)
+                        log(f"[SYNC] Download log awal: {key}")
+    except Exception as e:
+        log(f"[ERROR] Gagal sync awal: {e}")
+
     
 #===DETEKSI=====
+
 def detect_motor_plate(path: str, save_crop=False, save_dir=None):
     log(f"[DETECT] Proses file: {path}")
     img = cv2.imread(path)
@@ -146,30 +188,37 @@ def detect_motor_plate(path: str, save_crop=False, save_dir=None):
 
     h_orig, w_orig, _ = img.shape
     img_resized = cv2.resize(img, (640, 640))
+    scale_x = w_orig / 640
+    scale_y = h_orig / 640
+
     motor_res = motor_model(img_resized, classes=[3], conf=0.2)[0]
 
     if motor_res.boxes:
         best_motor = max(motor_res.boxes, key=lambda b: float(b.conf[0]))
         x1m, y1m, x2m, y2m = map(int, best_motor.xyxy[0])
-        scale_x = w_orig / 640
-        scale_y = h_orig / 640
+
+        # Konversi ke koordinat asli
         x1o = int(x1m * scale_x)
         y1o = int(y1m * scale_y)
         x2o = int(x2m * scale_x)
         y2o = int(y2m * scale_y)
+
         dx = int(0.1 * (x2o - x1o))
         dy = int(0.1 * (y2o - y1o))
         x1c = max(x1o - dx, 0)
         y1c = max(y1o - dy, 0)
         x2c = min(x2o + dx, w_orig - 1)
         y2c = min(y2o + dy, h_orig - 1)
+
         roi_motor = img[y1c:y2c, x1c:x2c]
         if roi_motor.size == 0:
             return "motor", None, None
+
+        # Resize ROI motor ke 640x640 untuk deteksi plat
         roi_resized = cv2.resize(roi_motor, (640, 640))
         plate_res = plate_model(roi_resized, conf=0.2)[0]
+
         if not plate_res.boxes:
-            # hanya motor tanpa plat
             if save_crop and save_dir:
                 fname = f"motor_{os.path.basename(path)}"
                 save_path = os.path.join(save_dir, fname)
@@ -179,13 +228,19 @@ def detect_motor_plate(path: str, save_crop=False, save_dir=None):
 
         best_plate = max(plate_res.boxes, key=lambda b: float(b.conf[0]))
         x1p, y1p, x2p, y2p = map(int, best_plate.xyxy[0])
-        rh, rw, _ = roi_motor.shape
-        scale_px = rw / 640
-        scale_py = rh / 640
+
+        # Skala plat ke koordinat asli (dari roi_resized ke roi_motor lalu ke img)
+        rw, rh = 640, 640
+        roi_w = x2c - x1c
+        roi_h = y2c - y1c
+        scale_px = roi_w / rw
+        scale_py = roi_h / rh
+
         abs_x1p = int(x1p * scale_px) + x1c
         abs_y1p = int(y1p * scale_py) + y1c
         abs_x2p = int(x2p * scale_px) + x1c
         abs_y2p = int(y2p * scale_py) + y1c
+
         crop_plate = img[abs_y1p:abs_y2p, abs_x1p:abs_x2p]
         if crop_plate.size == 0:
             return "motor", None, None
@@ -203,14 +258,13 @@ def detect_motor_plate(path: str, save_crop=False, save_dir=None):
             return "motor", None, None
 
     else:
-        # tidak ada motor, coba deteksi plat saja
+        # Tidak ada motor, coba langsung deteksi plat
         plate_res = plate_model(img_resized, conf=0.2)[0]
         if not plate_res.boxes:
             return "no_motor", None, None
         best_plate = max(plate_res.boxes, key=lambda b: float(b.conf[0]))
         x1p, y1p, x2p, y2p = map(int, best_plate.xyxy[0])
-        scale_x = w_orig / 640
-        scale_y = h_orig / 640
+
         x1 = int(x1p * scale_x)
         y1 = int(y1p * scale_y)
         x2 = int(x2p * scale_x)
@@ -218,6 +272,7 @@ def detect_motor_plate(path: str, save_crop=False, save_dir=None):
         crop_plate = img[y1:y2, x1:x2]
         if crop_plate.size == 0:
             return "no_motor", None, None
+
         ocr_res = ocr_model.ocr(crop_plate, cls=True)
         if ocr_res and ocr_res[0]:
             plate_text = ocr_res[0][0][1][0]
@@ -229,6 +284,7 @@ def detect_motor_plate(path: str, save_crop=False, save_dir=None):
             return "plate", plate_text, None
         else:
             return "no_motor", None, None
+
 
 def process_folder(pit_idx: int):
     today = datetime.now(timezone).strftime("%Y-%m-%d")
@@ -337,11 +393,13 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 @app.on_event("startup")
 def on_startup():
     log("[STARTUP] Memulai semua worker thread")
+    sync_logs_from_spaces()
     for idx in range(len(FOLDERS)):
         t = threading.Thread(target=pit_worker, args=(idx,), daemon=True)
         t.start()
         
     threading.Thread(target=heartbeat_monitor, daemon=True).start()
+    threading.Thread(target=daily_reset_scheduler, daemon=True).start() 
   
 @app.get("/")
 def root():
@@ -353,24 +411,68 @@ def head_root():
 
 @app.get("/log_dates")
 def list_log_dates():
-    dates = []
+    dates = set()
+
+    # Hari ini (agar bisa di-filter)
+    today_str = datetime.now(timezone).strftime("%Y-%m-%d")
+
+    # Ambil daftar dari Spaces
+    try:
+        result = s3.list_objects_v2(Bucket=DO_SPACES_BUCKET, Prefix="datalog/")
+        if "Contents" in result:
+            for obj in result["Contents"]:
+                key = obj["Key"]
+                if key.endswith(".json"):
+                    fname = os.path.basename(key)
+                    date_str = fname.replace(".json", "")
+                    if date_str != today_str:  # ➤ FILTER HARI INI
+                        dates.add(date_str)
+
+                        # Sync ke lokal jika belum ada
+                        local_path = os.path.join(LOG_DIR, fname)
+                        if not os.path.exists(local_path):
+                            with open(local_path, "wb") as f:
+                                s3.download_fileobj(DO_SPACES_BUCKET, key, f)
+                            log(f"[SYNC] Download log: {key}")
+    except Exception as e:
+        log(f"[ERROR] Gagal ambil daftar log dari Spaces: {e}")
+
+    # Gabungkan dengan file lokal tambahan (jika ada)
     for file in os.listdir(LOG_DIR):
         if file.endswith(".json"):
-            dates.append(file.replace(".json", ""))
-    dates.sort(reverse=True)
-    return JSONResponse({"dates": dates})
+            date_str = file.replace(".json", "")
+            if date_str != today_str:  # ➤ FILTER HARI INI
+                dates.add(date_str)
+
+    return JSONResponse({"dates": sorted(dates, reverse=True)})
 
 @app.get("/state")
 def get_state(request: Request):
     date_str = request.query_params.get("date")
     if date_str:
         log_path = os.path.join(LOG_DIR, f"{date_str}.json")
-        if os.path.exists(log_path):
+
+        # Jika file log tidak ada secara lokal, coba unduh dari DigitalOcean Spaces
+        if not os.path.exists(log_path):
+            remote_path = f"datalog/{date_str}.json"
+            try:
+                with open(log_path, "wb") as f:
+                    s3.download_fileobj(DO_SPACES_BUCKET, remote_path, f)
+                log(f"[DOWNLOAD] Log tanggal {date_str} diunduh dari Spaces")
+            except Exception as e:
+                log(f"[ERROR] Gagal unduh log dari Spaces: {e}")
+                return JSONResponse({"error": "Log not found (lokal & cloud)"}, status_code=404)
+
+        # Setelah berhasil, baca file log-nya
+        try:
             with open(log_path) as f:
                 data = json.load(f)
             return JSONResponse(data)
-        return JSONResponse({"error": "Log not found"}, status_code=404)
+        except Exception as e:
+            log(f"[ERROR] Gagal baca file JSON: {e}")
+            return JSONResponse({"error": "Gagal membaca log"}, status_code=500)
 
+    # Realtime mode
     now = datetime.now(timezone)
     status = []
     for i, p in enumerate(state["pit_log"]):
@@ -485,4 +587,3 @@ async def upload_image(pit: int = 0, file: UploadFile = File(...)):
     except Exception as e:
         log(f"[ERROR] Upload internal error: {e}")
         return JSONResponse({"error": "Internal error", "details": str(e)}, status_code=500)
-
