@@ -2,6 +2,7 @@ import os
 import time
 import cv2
 import json
+import re
 from datetime import datetime
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -47,12 +48,14 @@ plate_model = YOLO("best(x100).pt")
 ocr_model = PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
 
 # === State Aplikasi ===
+NUM_PIT = 5
 state = {
     "pit_log": ["Empty"] * 5,
     "pit_time": [None] * 5,
     "summary": [],
     "log": [],
-    "simulation_running": True
+    "simulation_running": True,
+    "no_motor_count": [0] * NUM_PIT,  # Tambahan counter
 }
 last_heartbeat = {}
 ping_status = ["inactive"] * 5
@@ -60,7 +63,7 @@ ping_status = ["inactive"] * 5
 # === Utilitas Logging ===
 def log(msg):
     now = datetime.now(timezone)
-    ts = now.strftime("%H:%M:%S")
+    ts = now.strftime("%Y-%m-%d %H:%M:%S")  # Tambahkan tanggal
     line = f"[{ts}] {msg}"
     print(line)
     state["log"].append(line)
@@ -154,7 +157,6 @@ def daily_reset_scheduler():
         now = datetime.now(timezone)
         next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         wait_seconds = (next_midnight - now).total_seconds()
-        log(f"[SCHEDULER] Menunggu {int(wait_seconds)} detik sampai 00:00")
         time.sleep(wait_seconds)
 
         reset_state_for_new_day()
@@ -301,6 +303,7 @@ def process_folder(pit_idx: int):
         prev_state = state["pit_log"][pit_idx]
 
         if status == "plate":
+            state["no_motor_count"][pit_idx] = 0  # Reset counter
             if prev_state == "Empty":
                 state["pit_log"][pit_idx] = plate_text
                 state["pit_time"][pit_idx] = now
@@ -310,28 +313,38 @@ def process_folder(pit_idx: int):
                 log(f"PIT{pit_idx+1} Plat Dikenali: {plate_text}")
 
         elif status == "motor":
+            state["no_motor_count"][pit_idx] = 0  # Reset counter
             if prev_state == "Empty":
                 state["pit_log"][pit_idx] = "Motor"
                 state["pit_time"][pit_idx] = now
                 log(f"PIT{pit_idx+1} ⬅ Motor (tanpa plat)")
+            elif prev_state not in ["Empty", "Motor"]:
+                log(f"PIT{pit_idx+1} Plat masih dipertahankan: {prev_state}")
 
         elif status == "no_motor":
-            if prev_state != "Empty":
-                masuk = state["pit_time"][pit_idx]
-                dur = (now - masuk).total_seconds() if masuk else 0
-                h, rem = divmod(dur, 3600)
-                m, s = divmod(rem, 60)
-                state["summary"].append({
-                    "pit": f"PIT {pit_idx+1}",
-                    "plate": prev_state,
-                    "masuk": masuk.strftime("%H:%M:%S") if masuk else "--:--:--",
-                    "keluar": now.strftime("%H:%M:%S"),
-                    "duration": f"{int(h):02}:{int(m):02}:{int(s):02}"
-                })
+            if prev_state == "Empty":
+                state["no_motor_count"][pit_idx] = 0  # Tidak perlu hitung
+            else:
+                state["no_motor_count"][pit_idx] += 1
+                if state["no_motor_count"][pit_idx] >= 3:
+                    masuk = state["pit_time"][pit_idx]
+                    dur = (now - masuk).total_seconds() if masuk else 0
+                    h, rem = divmod(dur, 3600)
+                    m, s = divmod(rem, 60)
+                    state["summary"].append({
+                        "pit": f"PIT {pit_idx+1}",
+                        "plate": prev_state,
+                        "masuk": masuk.strftime("%H:%M:%S") if masuk else "--:--:--",
+                        "keluar": now.strftime("%H:%M:%S"),
+                        "duration": f"{int(h):02}:{int(m):02}:{int(s):02}"
+                    })
 
-                state["pit_log"][pit_idx] = "Empty"
-                state["pit_time"][pit_idx] = None
-                log(f"PIT{pit_idx+1} ➡ Motor Keluar")
+                    state["pit_log"][pit_idx] = "Empty"
+                    state["pit_time"][pit_idx] = None
+                    state["no_motor_count"][pit_idx] = 0
+                    log(f"PIT{pit_idx+1} ➡ Motor Keluar")
+                else:
+                    log(f"PIT{pit_idx+1} Tidak terdeteksi motor, hitung={state['no_motor_count'][pit_idx]}")
 
         os.remove(full_path)
 
@@ -479,7 +492,7 @@ def get_state(request: Request):
         if p != "Empty" and state["pit_time"][i]:
             d = int((now - state["pit_time"][i]).total_seconds())
             m, s = divmod(d, 60)
-            status.append(f"{p} ({m:02}:{s:02})")
+            status.append(f"{p} ({h:2}:{m:02}:{s:02})")
         else:
             status.append("Empty")
 
@@ -496,12 +509,15 @@ def get_state(request: Request):
 @app.post("/heartbeat")
 async def heartbeat(pit_id: str = Form(...)):
     last_heartbeat[pit_id] = datetime.now(timezone)
+    match = re.search(r'\d+', pit_id)
+    if not match:
+        return JSONResponse({"error": "Invalid PIT ID"}, status_code=400)
+    pit_num = int(match.group()) - 1
     if isinstance(ping_status, list):
-        pit_num = int(pit_id.split()[-1]) - 1
         ping_status[pit_num] = "active"
     else:
         ping_status[pit_id] = "active"
-    log(f"[STATUS] {pit_id} reconnecting {last_heartbeat[pit_id].strftime('%H:%M:%S')}")
+    log(f"[STATUS] {pit_id} reconnecting")
     save_daily_log()
     upload_log_to_spaces()
     return {"status": "ok"}
@@ -529,20 +545,30 @@ async def upload_image(pit: int = 0, file: UploadFile = File(...)):
         prev_state = state["pit_log"][pit]
 
         if status == "plate":
+            state["no_motor_count"][pit] = 0  # Reset counter
             if prev_state == "Empty":
                 state["pit_log"][pit] = plate_text
                 state["pit_time"][pit] = now
                 log(f"PIT{pit+1} ⬅ Plat: {plate_text}")
             elif prev_state == "Motor":
                 state["pit_log"][pit] = plate_text
-                log(f"PIT{pit+1} Plat Dikenali: {plate_text}")
+                log(f"PIT{pit+1} Plat Dikenali: {plate_text}")                
         elif status == "motor":
+            state["no_motor_count"][pit] = 0  # Reset counter
             if prev_state == "Empty":
                 state["pit_log"][pit] = "Motor"
                 state["pit_time"][pit] = now
                 log(f"PIT{pit+1} ⬅ Motor (tanpa plat)")
+            elif prev_state not in ["Empty", "Motor"]:
+                log(f"PIT{pit+1} Plat masih dipertahankan: {prev_state}")
         elif status == "no_motor":
-            if prev_state != "Empty":
+            if prev_state == "Empty":
+                state["no_motor_count"][pit] = 0
+                os.remove(local_path)
+                return JSONResponse({"status": "ignored", "reason": status})
+
+            state["no_motor_count"][pit] += 1
+            if state["no_motor_count"][pit] >= 3:
                 masuk = state["pit_time"][pit]
                 dur = (now - masuk).total_seconds() if masuk else 0
                 h, rem = divmod(dur, 3600)
@@ -557,16 +583,18 @@ async def upload_image(pit: int = 0, file: UploadFile = File(...)):
 
                 state["pit_log"][pit] = "Empty"
                 state["pit_time"][pit] = None
+                state["no_motor_count"][pit] = 0
                 log(f"PIT{pit+1} ➡ Motor Keluar")
 
-                # Simpan log jika terjadi keluar
                 save_daily_log()
                 upload_log_to_spaces()
+            else:
+                log(f"PIT{pit+1} Tidak terdeteksi motor, hitung={state['no_motor_count'][pit]}")
 
             os.remove(local_path)
             return JSONResponse({"status": "ignored", "reason": status})
 
-        # Upload file hasil deteksi (bisa crop, bisa original)
+        # Upload file hasil deteksi
         upload_path = result_path or local_path
         remote_path = f"{today}/{FOLDERS[pit]}/{os.path.basename(upload_path)}"
 
@@ -577,6 +605,11 @@ async def upload_image(pit: int = 0, file: UploadFile = File(...)):
                 remote_path,
                 ExtraArgs={'ACL': 'private', 'ContentType': file.content_type}
             )
+
+        if result_path and os.path.exists(result_path):
+            os.remove(result_path)
+        if upload_path != local_path and os.path.exists(local_path):
+            os.remove(local_path)
 
         log(f"[UPLOAD] File dari PIT{pit+1} tersimpan: {remote_path}")
         return JSONResponse({"status": "uploaded", "path": remote_path})
