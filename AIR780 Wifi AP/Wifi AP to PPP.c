@@ -17,6 +17,7 @@
 #include "lwip/netif.h"
 #include "lwip/sio.h"
 #include "lwip/ip_addr.h"
+#include "lwip/tcpip.h"  // ⬅️ Tambahkan ini
 #include "netif/ppp/pppapi.h"
 #include "netif/ppp/pppos.h"
 #include "netif/ppp/ppp.h"
@@ -32,21 +33,23 @@
 #define PPPAUTHTYPE_NONE 0
 #endif
 
-
 static const char *TAG = "PPP_AP";
 static struct netif ppp_netif;
 static ppp_pcb *ppp = NULL;
 static esp_netif_t *ap_netif = NULL;
 static esp_netif_t *ppp_netif_esp = NULL;
 
+// ⬇️ Struktur argumen untuk callback
+typedef struct {
+    ppp_pcb *ppp;
+} ppp_cfg_args_t;
+
 /**
  * Fungsi callback output PPP (modem TX)
  */
- 
 u32_t ppp_output_cb(ppp_pcb *pcb, const void *data, u32_t len, void *ctx) {
     return uart_write_bytes(MODEM_UART_NUM, (const char *)data, len);
 }
-
 
 /**
  * Fungsi callback status PPP
@@ -58,12 +61,26 @@ void ppp_status_cb(ppp_pcb *pcb, int err_code, void *ctx) {
         case PPPERR_NONE:
             ESP_LOGI(TAG, "PPP connected");
             ESP_LOGI(TAG, "IP address: %s", ipaddr_ntoa(&pppif->ip_addr));
-            // Note: NAT/IP forwarding belum diaktifkan di sini
             break;
         default:
             ESP_LOGE(TAG, "PPP error code: %d", err_code);
             break;
     }
+}
+
+/**
+ * Fungsi konfigurasi PPP yang dipanggil di dalam konteks TCPIP
+ */
+static void ppp_setup_cb(void *arg) {
+    ppp_cfg_args_t *cfg = (ppp_cfg_args_t *)arg;
+
+    ESP_LOGI(TAG, "PPP setup in TCPIP thread");
+    ppp_set_auth(cfg->ppp, PPPAUTHTYPE_NONE, "", "");
+    ppp_set_default(cfg->ppp);
+    netif_set_default(&ppp_netif);
+    ppp_connect(cfg->ppp, 0);  // ⬅️ Pindahkan ke sini!
+
+    free(cfg);
 }
 
 /**
@@ -92,21 +109,58 @@ void init_uart_modem() {
 }
 
 /**
+ * Tunggu respon CONNECT dari modem
+ */
+ 
+bool wait_for_connect_response() {
+    char resp[256] = {0};
+    int total_len = 0;
+
+    for (int i = 0; i < 20; i++) {  // 20 * 500ms = 10 detik
+        int len = uart_read_bytes(MODEM_UART_NUM, (uint8_t *)(resp + total_len), sizeof(resp) - total_len - 1, pdMS_TO_TICKS(500));
+        if (len > 0) {
+            total_len += len;
+            resp[total_len] = '\0';
+            ESP_LOGI(TAG, "Modem response so far: %s", resp);
+            if (strstr(resp, "CONNECT")) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+/**
  * Konfigurasi modem dengan perintah AT
  */
+ 
 void modem_setup() {
     ESP_LOGI(TAG, "Setting up modem with AT commands...");
     modem_send_cmd("AT");
     vTaskDelay(pdMS_TO_TICKS(1000));
+    modem_send_cmd("ATE0");  // Disable echo (penting untuk mencegah loopback)
+    vTaskDelay(pdMS_TO_TICKS(500));
     modem_send_cmd("AT+CFUN=1");
     vTaskDelay(pdMS_TO_TICKS(1000));
+    modem_send_cmd("AT+CREG?");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    modem_send_cmd("AT+CSQ");
+    vTaskDelay(pdMS_TO_TICKS(500));
     modem_send_cmd("AT+CGATT=1");
     vTaskDelay(pdMS_TO_TICKS(1000));
     modem_send_cmd("AT+CGDCONT=1,\"IP\",\"internet\"");
     vTaskDelay(pdMS_TO_TICKS(1000));
     modem_send_cmd("ATD*99#");
-    vTaskDelay(pdMS_TO_TICKS(3000));
+
+    if (!wait_for_connect_response()) {
+        ESP_LOGE(TAG, "Modem did not return CONNECT, aborting...");
+        vTaskDelete(NULL);  // Stop the task if failed
+    } else {
+        ESP_LOGI(TAG, "Modem CONNECT received, ready for PPP.");
+    }
 }
+
 
 /**
  * Task utama untuk menangani PPP
@@ -120,9 +174,10 @@ void ppp_task(void *arg) {
     ppp = pppapi_pppos_create(&ppp_netif, ppp_output_cb, ppp_status_cb, &ppp_netif);
     assert(ppp != NULL);
 
-    ppp_set_default(ppp);
-    ppp_set_auth(ppp, PPPAUTHTYPE_NONE, "", "");
-    ppp_connect(ppp, 0);
+    // ⬇️ Bungkus konfigurasi PPP dalam callback ke TCPIP thread
+    ppp_cfg_args_t *cfg = malloc(sizeof(ppp_cfg_args_t));
+    cfg->ppp = ppp;
+    tcpip_callback(ppp_setup_cb, cfg);
 
     while (1) {
         int len = uart_read_bytes(MODEM_UART_NUM, buf, BUF_SIZE, pdMS_TO_TICKS(100));
@@ -162,7 +217,6 @@ void init_wifi_ap() {
     ESP_LOGI(TAG, "Wi-Fi AP started. SSID: %s", ap_config.ap.ssid);
 }
 
-
 /**
  * Fungsi utama
  */
@@ -174,11 +228,10 @@ void app_main(void) {
     ap_netif = esp_netif_create_default_wifi_ap();
     init_wifi_ap();
     init_uart_modem();
-     
+
     esp_netif_config_t ppp_cfg = ESP_NETIF_DEFAULT_PPP();
     ppp_netif_esp = esp_netif_new(&ppp_cfg);
-
     esp_netif_attach(ppp_netif_esp, &ppp_netif);
-
+    
     xTaskCreate(ppp_task, "ppp_task", 4096, NULL, 5, NULL);
 }
