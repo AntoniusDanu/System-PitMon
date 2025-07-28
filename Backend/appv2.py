@@ -20,11 +20,11 @@ from botocore.exceptions import BotoCoreError, ClientError
 DOWNLOAD_DIR = "uploads"
 FOLDERS = [f"P{i+1}" for i in range(5)]
 DO_SPACES_REGION = "sgp1"
-DO_SPACES_ENDPOINT = "https://sgp1.digitaloceanspaces.com"
-DO_SPACES_KEY = "DO801UTAA8KY7NAHHRC8"
-DO_SPACES_SECRET = "Hos62RJQmYVkARvJmk96xPXMG04p58SK5q/WTlzpycE"
-DO_SPACES_BUCKET = "pitmonitoring"
-LOG_DIR = "datalog"
+DO_SPACES_ENDPOINT = ""
+DO_SPACES_KEY = ""
+DO_SPACES_SECRET = ""
+DO_SPACES_BUCKET = ""
+LOG_DIR = ""
 
 timezone = ZoneInfo("Asia/Jakarta")
 
